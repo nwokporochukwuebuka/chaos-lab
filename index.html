@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Animated chaos engineering demo: a cache failure and a four node consensus cluster.">
+<style>
+html{color-scheme:light}body{margin:0}img{max-width:100%}[hidden]{display:none!important}
+</style>
+<title>Chaos Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an instrument panel. Live stage on the left, experiment card and controls on the right, telemetry charts below. */
+:root{
+  --bg:#eef1f6; --surface:#ffffff; --surface-2:#e6ebf2; --line:#d3dae5;
+  --fg:#121926; --muted:#5a6578; --accent:#2c56c9; --accent-soft:#e1e9fb;
+  --ok:#1d8048; --ok-soft:#dcf1e4; --warn:#a86a0e; --warn-soft:#fbeed6; --bad:#c3352b; --bad-soft:#fbe3e0;
+  --cache:#7446c9; --db:#16777f; --client:#5a6578;
+  --display:"Sora","Inter",system-ui,sans-serif; --body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c1118; --surface:#141b26; --surface-2:#1b2431; --line:#283345;
+  --fg:#e5eaf2; --muted:#94a1b5; --accent:#7196ff; --accent-soft:#1c2a4a;
+  --ok:#43c27a; --ok-soft:#14301f; --warn:#e3a742; --warn-soft:#352812; --bad:#ff6d60; --bad-soft:#3a1815;
+  --cache:#a687ff; --db:#3cc0c8; --client:#94a1b5; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c1118; --surface:#141b26; --surface-2:#1b2431; --line:#283345;
+  --fg:#e5eaf2; --muted:#94a1b5; --accent:#7196ff; --accent-soft:#1c2a4a;
+  --ok:#43c27a; --ok-soft:#14301f; --warn:#e3a742; --warn-soft:#352812; --bad:#ff6d60; --bad-soft:#3a1815;
+  --cache:#a687ff; --db:#3cc0c8; --client:#94a1b5; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.5;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+.wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+h1{font-family:var(--display);font-weight:600;font-size:28px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:2px 0 0;max-width:62ch}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tabs{display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px}
+.tab{border:0;background:transparent;color:var(--muted);font:500 14px var(--body);padding:8px 14px;border-radius:7px;cursor:pointer}
+.tab[aria-selected="true"]{background:var(--surface);color:var(--fg);box-shadow:0 0 0 1px var(--line)}
+button,select{font:500 14px var(--body);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button:focus-visible,select:focus-visible,.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn-bad{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn-bad:hover{filter:brightness(1.07);border-color:var(--bad)}
+.btn-on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px}
+@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+.stage{padding:0;overflow:hidden;position:relative}
+.stage-head{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+.stage-title{font-family:var(--display);font-weight:500;font-size:17px}
+canvas{display:block;width:100%}
+.legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.pill{display:inline-flex;align-items:center;gap:8px;font:500 13px var(--body);padding:6px 12px;border-radius:999px}
+.pill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.bad{background:var(--bad-soft);color:var(--bad)} .pill.warn{background:var(--warn-soft);color:var(--warn)}
+.side{display:flex;flex-direction:column;gap:16px;min-width:0}
+.eyebrow{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.hypo{font-size:15px;margin:0}
+.result{margin-top:12px;padding:10px 12px;border-radius:10px;font-size:14px;background:var(--surface-2);color:var(--muted)}
+.result.ok{background:var(--ok-soft);color:var(--ok)} .result.bad{background:var(--bad-soft);color:var(--bad)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--surface-2);border-radius:10px;padding:10px 12px;min-width:0}
+.stat .k{font-size:12px;color:var(--muted)} .stat .v{font:500 22px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat .v.bad{color:var(--bad)} .stat .v.ok{color:var(--ok)}
+.ctrls{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.seg{display:flex;background:var(--surface-2);border-radius:10px;padding:4px;gap:4px}
+.seg button{flex:1;border:0;background:transparent;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 0 0 1px var(--line)}
+.nodectl{display:grid;grid-template-columns:auto 1fr 1fr;gap:6px 8px;align-items:center;font-size:14px}
+.nodectl button{padding:6px 10px;font-size:13px}
+ol.script{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--muted)}
+ol.script b{color:var(--fg);font-weight:600}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:720px){.charts{grid-template-columns:1fr}}
+.chart-title{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted);margin-bottom:6px}
+.chart-title strong{color:var(--fg);font-weight:600}
+ul.log{list-style:none;margin:0;padding:0;font:400 13px var(--mono);display:flex;flex-direction:column;gap:4px;min-height:120px}
+ul.log li{display:flex;gap:10px;min-width:0} ul.log time{color:var(--muted);flex:none} ul.log span{min-width:0;overflow-wrap:anywhere}
+ul.log li.bad span{color:var(--bad)} ul.log li.ok span{color:var(--ok)} ul.log li.warn span{color:var(--warn)}
+.chain{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--line);overflow-x:auto;min-height:62px;align-items:center}
+.chain .lbl{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);flex:none;margin-right:4px}
+.block{flex:none;font:500 13px var(--mono);padding:6px 10px;border-radius:8px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok);animation:pop .5s ease-out}
+@keyframes pop{from{transform:translateX(-12px);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.block{animation:none}}
+.view[hidden]{display:none!important}
+.hint{font-size:12px;color:var(--muted);margin:0}
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Chaos Lab</h1>
+      <p class="sub">Two live chaos experiments. Inject a failure, watch the steady state, and see whether the hypothesis survives.</p>
+    </div>
+    <div class="toolbar">
+      <div class="tabs" role="tablist" aria-label="Experiment">
+        <button class="tab" role="tab" id="tab-cache" aria-selected="true" data-view="cache">1. Cache failure</button>
+        <button class="tab" role="tab" id="tab-consensus" aria-selected="false" data-view="consensus">2. Consensus cluster</button>
+      </div>
+      <button id="pause" aria-label="Pause simulation">Pause</button>
+      <select id="speed" aria-label="Simulation speed">
+        <option value="0.5">0.5x speed</option>
+        <option value="1" selected>1x speed</option>
+        <option value="2">2x speed</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- CACHE VIEW -->
+  <section class="view" id="view-cache">
+    <div class="grid">
+      <div class="panel stage">
+        <div class="stage-head">
+          <span class="stage-title">Web API with a cache in front of the database</span>
+          <span class="pill ok" id="c-pill">Steady state holding</span>
+        </div>
+        <canvas id="c-canvas" aria-label="Animated requests flowing from client to API to cache and database"></canvas>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--accent)"></i>Request in flight</span>
+          <span><i class="dot" style="background:var(--ok)"></i>Success</span>
+          <span><i class="dot" style="background:var(--warn)"></i>Fallback to database</span>
+          <span><i class="dot" style="background:var(--bad)"></i>Error</span>
+        </div>
+      </div>
+      <div class="side">
+        <div class="panel">
+          <p class="eyebrow">Experiment</p>
+          <p class="hypo"><b>Steady state:</b> response time under 300 ms, errors under 1%.</p>
+          <p class="hypo" style="margin-top:6px"><b>Hypothesis:</b> if the cache fails, the API falls back to the database and the steady state holds.</p>
+          <div class="result" id="c-result">No fault injected yet.</div>
+        </div>
+        <div class="panel">
+          <div class="stats">
+            <div class="stat"><div class="k">Avg response time</div><div class="v" id="c-lat">0 ms</div></div>
+            <div class="stat"><div class="k">Error rate</div><div class="v" id="c-err">0%</div></div>
+            <div class="stat"><div class="k">Stuck at cache</div><div class="v" id="c-stuck">0</div></div>
+            <div class="stat"><div class="k">Circuit breaker</div><div class="v" id="c-brk" style="font-size:16px;padding-top:4px">n/a</div></div>
+          </div>
+        </div>
+        <div class="panel ctrls">
+          <p class="eyebrow" style="margin:0">System design</p>
+          <div class="seg" role="group" aria-label="System design">
+            <button id="m-fragile" aria-pressed="true">Fragile</button>
+            <button id="m-resilient" aria-pressed="false">Resilient</button>
+          </div>
+          <p class="hint" id="m-hint">Fragile: waits up to 3 s for the cache, no fallback, 10 cache connections.</p>
+          <p class="eyebrow" style="margin:6px 0 0">Inject a fault</p>
+          <div class="row">
+            <button class="btn-bad" id="c-kill">Kill cache</button>
+            <button id="c-slow">Slow cache +450 ms</button>
+            <button id="c-reset">Reset</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONSENSUS VIEW -->
+  <section class="view" id="view-consensus" hidden>
+    <div class="grid">
+      <div class="panel stage">
+        <div class="stage-head">
+          <span class="stage-title">Four node permissioned blockchain (BFT consensus)</span>
+          <span class="pill ok" id="k-pill">Steady state holding</span>
+        </div>
+        <canvas id="k-canvas" aria-label="Animated consensus messages between four blockchain nodes. Click a node to crash or recover it."></canvas>
+        <div class="chain" id="k-chain"><span class="lbl">Chain</span></div>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--accent)"></i>Block proposal</span>
+          <span><i class="dot" style="background:var(--ok)"></i>Vote</span>
+          <span><i class="dot" style="background:var(--bad)"></i>Malicious vote</span>
+          <span>Click a node to crash or recover it</span>
+        </div>
+      </div>
+      <div class="side">
+        <div class="panel">
+          <p class="eyebrow">Experiment</p>
+          <p class="hypo"><b>Steady state:</b> a new block is confirmed every round (about 3 s).</p>
+          <p class="hypo" style="margin-top:6px"><b>Hypothesis:</b> with n = 4 nodes, the network tolerates f = 1 faulty node, because n ≥ 3f + 1 and a quorum needs 2f + 1 = 3 honest votes.</p>
+          <div class="result" id="k-result">No fault injected yet.</div>
+        </div>
+        <div class="panel">
+          <div class="stats">
+            <div class="stat"><div class="k">Blocks confirmed</div><div class="v" id="k-blocks">0</div></div>
+            <div class="stat"><div class="k">Honest votes</div><div class="v" id="k-votes">4 / 3</div></div>
+            <div class="stat"><div class="k">Since last block</div><div class="v" id="k-since">0.0 s</div></div>
+            <div class="stat"><div class="k">Network</div><div class="v" id="k-net" style="font-size:16px;padding-top:4px">Connected</div></div>
+          </div>
+        </div>
+        <div class="panel ctrls">
+          <p class="eyebrow" style="margin:0">Inject a fault</p>
+          <div class="nodectl" id="k-nodectl"></div>
+          <div class="row">
+            <button id="k-split">Split network 2 | 2</button>
+            <button id="k-reset">Reset</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="charts">
+    <div class="panel">
+      <div class="chart-title"><strong id="ch1-title">Response time (ms)</strong><span id="ch1-note">dashed line: 300 ms limit</span></div>
+      <canvas id="ch1" aria-label="Chart of the first steady state metric over time"></canvas>
+    </div>
+    <div class="panel">
+      <div class="chart-title"><strong id="ch2-title">Error rate (%)</strong><span id="ch2-note">dashed line: 1% limit</span></div>
+      <canvas id="ch2" aria-label="Chart of the second steady state metric over time"></canvas>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <p class="eyebrow">Event log</p>
+      <ul class="log" id="log"></ul>
+    </div>
+    <div class="panel">
+      <p class="eyebrow">Demo script</p>
+      <ol class="script" id="script-cache">
+        <li>Point at the steady state: fast responses, no errors.</li>
+        <li>On <b>Fragile</b>, click <b>Kill cache</b>. Requests pile up waiting, then errors spike.</li>
+        <li>Click <b>Reset</b>, then switch to <b>Resilient</b>.</li>
+        <li>Kill the cache again. The circuit breaker opens, traffic goes to the database, the steady state holds.</li>
+        <li>Try <b>Slow cache</b> to show a quieter failure.</li>
+      </ol>
+      <ol class="script" id="script-consensus" hidden>
+        <li>Four honest nodes confirm one block per round.</li>
+        <li><b>Crash</b> one node. Blocks keep coming: f = 1 is tolerated.</li>
+        <li>Crash a second node. Only 2 honest votes, no quorum, the chain stops.</li>
+        <li><b>Reset</b>, then make one node <b>Malicious</b>. Still 3 honest votes, still working.</li>
+        <li><b>Split network</b>. Each side has 2 nodes, so neither side can confirm.</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+const $=s=>document.getElementById(s);
+let COL={};
+function readColors(){const cs=getComputedStyle(document.documentElement);
+  ["bg","surface","surface-2","line","fg","muted","accent","accent-soft","ok","ok-soft","warn","warn-soft","bad","bad-soft","cache","db","client"].forEach(k=>COL[k]=cs.getPropertyValue("--"+k).trim());}
+readColors();
+try{matchMedia("(prefers-color-scheme: dark)").addEventListener("change",readColors)}catch(e){}
+new MutationObserver(readColors).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme","class","style"]});
+
+function rr(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+const fmtT=ms=>{const s=Math.floor(ms/1000);return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
+
+/* canvas sizing */
+function fit(cv,ratio,minH,maxH){const w=cv.clientWidth||cv.parentElement.clientWidth;const h=Math.max(minH,Math.min(maxH,w*ratio));
+  const d=window.devicePixelRatio||1;if(cv.width!==Math.round(w*d)||cv.height!==Math.round(h*d)){cv.width=Math.round(w*d);cv.height=Math.round(h*d);cv.style.height=h+"px";}
+  const ctx=cv.getContext("2d");ctx.setTransform(d,0,0,d,0,0);return {ctx,w,h};}
+
+/* global */
+const G={view:"cache",speed:1,paused:false};
+const logEl=$("log");
+function logTo(st,msg,cls){st.log.unshift({t:st.t,msg,cls:cls||""});st.log.length=Math.min(st.log.length,8);if(G.view===st.name)renderLog();}
+function renderLog(){const st=G.view==="cache"?C:K;logEl.innerHTML=st.log.map(e=>`<li class="${e.cls}"><time>${fmtT(e.t)}</time><span>${e.msg}</span></li>`).join("")||'<li><span style="color:var(--muted)">Nothing yet. Inject a fault to start the experiment.</span></li>';}
+
+/* ================= CACHE SCENARIO ================= */
+const HOP=380,POOL=10,HANG=3000,TIMEOUT=80,HIT=0.8,REDIS_MS=15,SLOW_MS=450,DB_BASE=110,SPAWN=260;
+let C;
+function cacheInit(keepMode){const mode=C&&keepMode?C.mode:"fragile";
+  C={name:"cache",t:0,mode,redisUp:true,slow:false,breaker:"closed",fails:0,openUntil:0,probe:false,reqs:[],done:[],spawnAcc:0,sampleAcc:0,samples:[],log:[],pops:[],faultEver:false,violatedEver:false,lastPoolLog:-9999,lat:0,err:0,uid:0};
+  syncCacheUI();}
+function waiting(node){let n=0;for(const r of C.reqs)if(r.seg&&r.seg.type==="wait"&&r.seg.node===node)n++;return n;}
+function mv(r,a,b,cb,color){if(color)r.color=color;r.seg={type:"move",a,b,t0:C.t,dur:HOP,cb};}
+function wt(r,node,ms,cb){r.server+=ms;r.seg={type:"wait",node,t0:C.t,dur:ms,cb};}
+function spawn(){const r={id:++C.uid,born:C.t,server:0,color:"accent"};C.reqs.push(r);mv(r,"client","api",()=>atApi(r));}
+function atApi(r){
+  if(C.mode==="fragile"&&waiting("redis")>=POOL){r.server+=2;if(C.t-C.lastPoolLog>2500){C.lastPoolLog=C.t;logTo(C,"Cache connection pool exhausted. New requests rejected.","bad");}
+    mv(r,"api","client",()=>finish(r,false),"bad");return;}
+  let use=true;
+  if(C.mode==="resilient"){
+    if(C.breaker==="open"){if(C.t>=C.openUntil){C.breaker="half";logTo(C,"Circuit half-open: sending one probe to the cache.","warn");}else use=false;}
+    if(C.breaker==="half"){if(C.probe)use=false;else{C.probe=true;r.probe=true;}}
+  }
+  if(use)mv(r,"api","redis",()=>atRedis(r));else toDb(r);
+}
+function atRedis(r){const lat=REDIS_MS+(C.slow?SLOW_MS:0);
+  if(C.redisUp){
+    if(C.mode==="resilient"&&lat>TIMEOUT){wt(r,"redis",TIMEOUT,()=>cacheFail(r));return;}
+    wt(r,"redis",lat,()=>{cacheOk(r);if(Math.random()<HIT)back(r,"redis","ok");else mv(r,"redis","api",()=>toDb(r),"accent");});
+  }else{
+    if(C.mode==="fragile")wt(r,"redis",HANG,()=>back(r,"redis","bad"));
+    else wt(r,"redis",TIMEOUT,()=>cacheFail(r));
+  }}
+function cacheFail(r){C.fails++;
+  if(r.probe){C.probe=false;C.breaker="open";C.openUntil=C.t+4000;logTo(C,"Probe failed. Circuit open again for 4 s.","warn");}
+  else if(C.breaker==="closed"&&C.fails>=3){C.breaker="open";C.openUntil=C.t+4000;logTo(C,"3 cache timeouts. Circuit breaker OPEN: skipping the cache.","warn");}
+  mv(r,"redis","api",()=>toDb(r),"warn");}
+function cacheOk(r){C.fails=0;if(r.probe){C.probe=false;C.breaker="closed";logTo(C,"Probe succeeded. Circuit closed, cache back in use.","ok");}}
+function toDb(r){mv(r,"api","db",()=>{const load=waiting("db");wt(r,"db",DB_BASE+load*25,()=>back(r,"db",r.color==="warn"?"warn":"ok"));});}
+function back(r,from,kind){mv(r,from,"api",()=>mv(r,"api","client",()=>finish(r,kind!=="bad")),kind);}
+function finish(r,ok){r.dead=true;C.done.push({t:C.t,lat:r.server+12,ok});C.pops.push({t:C.t,ok,warn:r.color==="warn"});}
+
+function cacheStep(dt){C.t+=dt;C.spawnAcc+=dt;
+  while(C.spawnAcc>=SPAWN){C.spawnAcc-=SPAWN;spawn();}
+  for(const r of C.reqs){let g=0;while(r.seg&&C.t>=r.seg.t0+r.seg.dur&&g++<6){const cb=r.seg.cb;r.seg=null;cb();}}
+  C.reqs=C.reqs.filter(r=>!r.dead);
+  C.pops=C.pops.filter(p=>C.t-p.t<700);
+  C.sampleAcc+=dt;
+  if(C.sampleAcc>=500){C.sampleAcc=0;
+    C.done=C.done.filter(d=>C.t-d.t<3000);
+    const lats=C.done.map(d=>d.lat);
+    for(const r of C.reqs){const age=C.t-r.born;if(age>600&&r.seg&&r.seg.type==="wait"&&r.seg.node==="redis")lats.push(age);}
+    C.lat=lats.length?lats.reduce((a,b)=>a+b,0)/lats.length:0;
+    C.err=C.done.length?100*C.done.filter(d=>!d.ok).length/C.done.length:0;
+    C.samples.push({lat:C.lat,err:C.err});if(C.samples.length>80)C.samples.shift();
+    const bad=C.lat>300||C.err>1;if(bad&&C.faultEver)C.violatedEver=true;
+    updateCacheReadouts(bad);
+  }}
+function updateCacheReadouts(bad){
+  $("c-lat").textContent=Math.round(C.lat).toLocaleString()+" ms";$("c-lat").className="v"+(C.lat>300?" bad":"");
+  $("c-err").textContent=(C.err<10?C.err.toFixed(1):Math.round(C.err))+"%";$("c-err").className="v"+(C.err>1?" bad":"");
+  $("c-stuck").textContent=waiting("redis");
+  const b=$("c-brk");if(C.mode==="fragile"){b.textContent="None";b.className="v";}
+  else{b.textContent=C.breaker==="closed"?"Closed":C.breaker==="open"?"Open":"Half-open";b.className="v"+(C.breaker==="closed"?" ok":"");b.style.color=C.breaker==="closed"?"":"var(--warn)";}
+  const pill=$("c-pill");pill.className="pill "+(bad?"bad":"ok");pill.textContent=bad?"Steady state broken":"Steady state holding";
+  const res=$("c-result");
+  if(!C.faultEver){res.className="result";res.textContent="No fault injected yet.";}
+  else if(C.violatedEver){res.className="result bad";res.textContent="Hypothesis disproved. We found a weakness before a real outage did.";}
+  else{res.className="result ok";res.textContent="Hypothesis holding so far. The system survives this fault.";}
+}
+function syncCacheUI(){
+  $("m-fragile").setAttribute("aria-pressed",C.mode==="fragile");$("m-resilient").setAttribute("aria-pressed",C.mode==="resilient");
+  $("m-hint").textContent=C.mode==="fragile"?"Fragile: waits up to 3 s for the cache, no fallback, 10 cache connections.":"Resilient: 80 ms timeout, database fallback, and a circuit breaker that skips a failing cache.";
+  const k=$("c-kill");k.textContent=C.redisUp?"Kill cache":"Restore cache";k.className=C.redisUp?"btn-bad":"btn-on";
+  const s=$("c-slow");s.textContent=C.slow?"Fix slow cache":"Slow cache +450 ms";s.className=C.slow?"btn-on":"";
+  if(G.view==="cache"){renderLog();updateCacheReadouts(false);}
+}
+$("m-fragile").onclick=()=>{if(C.mode==="fragile")return;C.mode="fragile";C.breaker="closed";C.fails=0;C.probe=false;logTo(C,"Switched to fragile design.");syncCacheUI();};
+$("m-resilient").onclick=()=>{if(C.mode==="resilient")return;C.mode="resilient";C.breaker="closed";C.fails=0;C.probe=false;logTo(C,"Switched to resilient design.");syncCacheUI();};
+$("c-kill").onclick=()=>{C.redisUp=!C.redisUp;if(!C.redisUp){C.faultEver=true;C.violatedEver=false;logTo(C,"FAULT: cache server killed.","bad");}else logTo(C,"Cache restored.","ok");syncCacheUI();};
+$("c-slow").onclick=()=>{C.slow=!C.slow;if(C.slow){C.faultEver=true;C.violatedEver=false;logTo(C,"FAULT: cache network slowed by 450 ms.","bad");}else logTo(C,"Cache latency back to normal.","ok");syncCacheUI();};
+$("c-reset").onclick=()=>{cacheInit(true);logTo(C,"Reset. Healthy system, "+C.mode+" design.");};
+
+function cacheLayout(w,h){const nw=Math.max(92,Math.min(150,w*.17)),nh=58;
+  return {nw,nh,client:{x:w*.09+nw/2*.3,y:h*.5},api:{x:w*.42,y:h*.5},redis:{x:w*.78,y:h*.26},db:{x:w*.78,y:h*.74}};}
+function drawCache(){const cv=$("c-canvas");const {ctx,w,h}=fit(cv,.5,300,500);const L=cacheLayout(w,h);
+  ctx.clearRect(0,0,w,h);
+  // edges
+  const edge=(a,b,col,dash,width)=>{ctx.save();ctx.strokeStyle=col;ctx.lineWidth=width||2;if(dash)ctx.setLineDash(dash);ctx.beginPath();ctx.moveTo(L[a].x,L[a].y);ctx.lineTo(L[b].x,L[b].y);ctx.stroke();ctx.restore();};
+  edge("client","api",COL.line,null,3);
+  edge("api","db",COL.line,null,3);
+  if(!C.redisUp)edge("api","redis",COL.bad,[6,6],2);
+  else if(C.slow)edge("api","redis",COL.warn,[2,6],3);
+  else edge("api","redis",COL.line,null,3);
+  // breaker badge
+  const mx=(L.api.x+L.redis.x)/2,my=(L.api.y+L.redis.y)/2;
+  ctx.font="500 12px "+getComputedStyle(document.body).fontFamily;
+  if(C.mode==="resilient"){const txt="circuit: "+(C.breaker==="half"?"half-open":C.breaker);const tw=ctx.measureText(txt).width+18;
+    const col=C.breaker==="closed"?COL.ok:COL.warn,bg=C.breaker==="closed"?COL["ok-soft"]:COL["warn-soft"];
+    ctx.fillStyle=bg;rr(ctx,mx-tw/2-14,my-30,tw,22,11);ctx.fill();ctx.fillStyle=col;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(txt,mx-14,my-19);}
+  if(C.slow&&C.redisUp){ctx.fillStyle=COL.warn;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("+450 ms",mx+18,my+16);}
+  // nodes
+  const node=(k,label,sub,col,state)=>{const n=L[k];const x=n.x-L.nw/2,y=n.y-L.nh/2;
+    ctx.save();ctx.fillStyle=state==="down"?COL["bad-soft"]:COL.surface;rr(ctx,x,y,L.nw,L.nh,12);ctx.fill();
+    ctx.lineWidth=2;ctx.strokeStyle=state==="down"?COL.bad:col;if(state==="down")ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=state==="down"?COL.bad:COL.fg;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.font="600 14px Sora, Inter, sans-serif";ctx.fillText(label,n.x,n.y-8);
+    ctx.font="500 11px 'JetBrains Mono', monospace";ctx.fillStyle=state==="down"?COL.bad:state==="slow"?COL.warn:COL.muted;ctx.fillText(sub,n.x,n.y+11);ctx.restore();};
+  node("client","Users","traffic",COL.client);
+  node("api","API server",C.mode==="fragile"?"fragile":"resilient",COL.accent);
+  node("redis","Cache",!C.redisUp?"DOWN":C.slow?"SLOW":"in-memory",COL.cache,!C.redisUp?"down":C.slow?"slow":"");
+  const dbl=waiting("db");node("db","Database","load "+dbl,COL.db);
+  // pops at client
+  for(const p of C.pops){const a=(C.t-p.t)/700;ctx.save();ctx.globalAlpha=1-a;ctx.strokeStyle=p.ok?(p.warn?COL.warn:COL.ok):COL.bad;ctx.lineWidth=2;ctx.beginPath();ctx.arc(L.client.x+L.nw/2+6,L.client.y,6+a*18,0,Math.PI*2);ctx.stroke();ctx.restore();}
+  // packets
+  const stacks={};
+  for(const r of C.reqs){if(!r.seg)continue;let x,y;
+    const col=r.color==="accent"?COL.accent:r.color==="ok"?COL.ok:r.color==="warn"?COL.warn:COL.bad;
+    if(r.seg.type==="move"){const p=ease(Math.min(1,(C.t-r.seg.t0)/r.seg.dur));const a=L[r.seg.a],b=L[r.seg.b];x=a.x+(b.x-a.x)*p;y=a.y+(b.y-a.y)*p;
+      ctx.fillStyle=col;ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fill();}
+    else{const n=L[r.seg.node];const i=stacks[r.seg.node]=(stacks[r.seg.node]||0)+1;const idx=i-1;
+      x=n.x+L.nw/2+14+(idx%6)*14;y=n.y-L.nh/2+8+Math.floor(idx/6)*14;
+      const prog=Math.min(1,(C.t-r.seg.t0)/r.seg.dur);
+      let c=col;if(r.seg.dur>=HANG){c=prog>.5?COL.bad:COL.warn;}
+      ctx.fillStyle=c;ctx.beginPath();ctx.arc(x,y,5,0,Math.PI*2);ctx.fill();
+      if(r.seg.dur>=HANG){ctx.strokeStyle=c;ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(x,y,7.5,-Math.PI/2,-Math.PI/2+prog*Math.PI*2);ctx.stroke();}}
+  }
+  const stuck=stacks.redis||0;
+  if(stuck>=4){ctx.save();ctx.fillStyle=COL.bad;ctx.font="600 13px Inter, sans-serif";ctx.textAlign="left";ctx.textBaseline="top";
+    const nx=L.redis.x+L.nw/2+12,ny=L.redis.y-L.nh/2+16+Math.ceil(stuck/6)*14;ctx.fillText(stuck+" requests stuck waiting",nx,Math.min(h-40,ny));ctx.restore();}
+}
+
+/* ================= CONSENSUS SCENARIO ================= */
+const ROUND=3000;let K;
+function consInit(){K={name:"consensus",t:0,nodes:[1,2,3,4].map(i=>({id:i,alive:true,byz:false,flash:0,flashCol:""})),split:false,leaderIdx:0,leader:null,nextRound:600,
+  round:null,pkts:[],blocks:0,history:[],lastBlockT:0,log:[],faultEver:false,violatedEver:false,lastVotes:4,status:"ok"};
+  $("k-chain").innerHTML='<span class="lbl">Chain</span>';buildNodeCtl();if(G.view==="consensus"){renderLog();updateConsReadouts();}}
+const side=id=>(id===1||id===4)?"L":"R";
+const reach=(a,b)=>!K.split||side(a)===side(b);
+function honestVotes(leader){return K.nodes.filter(n=>n.alive&&!n.byz&&reach(n.id,leader)).length;}
+function startRound(){
+  let leader=null;
+  for(let k=0;k<4;k++){const n=K.nodes[(K.leaderIdx+k)%4];if(n.alive&&!n.byz){leader=n.id;K.leaderIdx=(K.leaderIdx+k+1)%4;break;}
+    else if(!n.alive)logTo(K,`Node ${n.id} is down, the next node takes over as leader.`,"warn");}
+  K.leader=leader;
+  if(!leader){K.round={t0:K.t,leader:null,decided:false};return;}
+  K.round={t0:K.t,leader,votesSent:false,decided:false};
+  for(const n of K.nodes)if(n.id!==leader)K.pkts.push({a:leader,b:n.id,t0:K.t,dur:800,kind:"prop",blocked:!reach(leader,n.id),toDead:!n.alive});
+}
+function sendVotes(){const L=K.round.leader;
+  const voters=K.nodes.filter(n=>n.alive&&reach(n.id,L));
+  for(const v of voters)for(const n of K.nodes)if(n.id!==v.id)K.pkts.push({a:v.id,b:n.id,t0:K.t,dur:750,kind:v.byz?"bad":"vote",blocked:!reach(v.id,n.id),toDead:!n.alive});}
+function decide(){const L=K.round.leader;const hv=honestVotes(L);K.lastVotes=hv;
+  if(hv>=3){K.blocks++;K.lastBlockT=K.t;K.history.push(1);
+    for(const n of K.nodes)if(n.alive&&!n.byz&&reach(n.id,L)){n.flash=K.t;n.flashCol="ok";}
+    const b=document.createElement("span");b.className="block";b.textContent="#"+K.blocks;const ch=$("k-chain");ch.insertBefore(b,ch.children[1]||null);while(ch.children.length>12)ch.removeChild(ch.lastChild);
+  }else{K.history.push(0);for(const n of K.nodes)if(n.alive&&reach(n.id,L)){n.flash=K.t;n.flashCol="warn";}
+    logTo(K,`No quorum: ${hv} honest vote${hv===1?"":"s"}, need 3. Block not confirmed.`,"bad");}
+  if(K.history.length>40)K.history.shift();}
+function consStep(dt){K.t+=dt;
+  if(K.t>=K.nextRound){K.nextRound+=ROUND;startRound();}
+  const R=K.round;
+  if(R&&R.leader){if(!R.votesSent&&K.t-R.t0>=900){R.votesSent=true;sendVotes();}
+    if(!R.decided&&K.t-R.t0>=1800){R.decided=true;decide();}}
+  else if(R&&!R.decided&&K.t-R.t0>=1800){R.decided=true;K.history.push(0);K.lastVotes=0;logTo(K,"No honest node can lead. Chain stopped.","bad");}
+  K.pkts=K.pkts.filter(p=>K.t-p.t0<p.dur+400);
+  const since=K.t-K.lastBlockT;const bad=K.t>4500&&since>4500;
+  if(bad&&K.faultEver)K.violatedEver=true;K.status=bad?"bad":"ok";
+  if(Math.floor(K.t/250)!==Math.floor((K.t-dt)/250))updateConsReadouts();}
+function updateConsReadouts(){
+  $("k-blocks").textContent=K.blocks;
+  const v=$("k-votes");v.textContent=K.lastVotes+" / 3";v.className="v"+(K.lastVotes>=3?" ok":" bad");
+  const s=(K.t-K.lastBlockT)/1000;const se=$("k-since");se.textContent=s.toFixed(1)+" s";se.className="v"+(s>4.5?" bad":"");
+  const ne=$("k-net");ne.textContent=K.split?"Split 2 | 2":"Connected";ne.style.color=K.split?"var(--bad)":"";
+  const pill=$("k-pill"),bad=K.status==="bad";pill.className="pill "+(bad?"bad":"ok");pill.textContent=bad?"Steady state broken":"Steady state holding";
+  const res=$("k-result");
+  if(!K.faultEver){res.className="result";res.textContent="No fault injected yet.";}
+  else if(K.violatedEver){res.className="result bad";res.textContent="Chain stopped. The fault went beyond what n = 4 can tolerate.";}
+  else{res.className="result ok";res.textContent="Hypothesis holding. Consensus survives this fault.";}}
+function buildNodeCtl(){const el=$("k-nodectl");el.innerHTML="";
+  for(const n of K.nodes){const lab=document.createElement("span");lab.textContent="Node "+n.id;lab.style.fontWeight="500";
+    const c=document.createElement("button");c.id="crash-"+n.id;c.textContent=n.alive?"Crash":"Recover";c.className=n.alive?"":"btn-on";
+    c.onclick=()=>toggleCrash(n.id);
+    const m=document.createElement("button");m.id="byz-"+n.id;m.textContent=n.byz?"Make honest":"Malicious";m.className=n.byz?"btn-on":"";
+    m.onclick=()=>{n.byz=!n.byz;if(n.byz){K.faultEver=true;logTo(K,`FAULT: node ${n.id} turned malicious. Its votes are rejected.`,"bad");}else logTo(K,`Node ${n.id} is honest again.`,"ok");buildNodeCtl();};
+    el.append(lab,c,m);}
+  const sp=$("k-split");sp.textContent=K.split?"Heal network":"Split network 2 | 2";sp.className=K.split?"btn-on":"";}
+function toggleCrash(id){const n=K.nodes[id-1];n.alive=!n.alive;if(!n.alive){K.faultEver=true;logTo(K,`FAULT: node ${id} crashed.`,"bad");}else logTo(K,`Node ${id} recovered and rejoined.`,"ok");buildNodeCtl();}
+$("k-split").onclick=()=>{K.split=!K.split;if(K.split){K.faultEver=true;logTo(K,"FAULT: network split. Nodes 1, 4 cannot reach nodes 2, 3.","bad");}else logTo(K,"Network healed.","ok");buildNodeCtl();updateConsReadouts();};
+$("k-reset").onclick=()=>{consInit();logTo(K,"Reset. Four healthy nodes.");};
+
+function consLayout(w,h){const r=Math.max(28,Math.min(42,w*.045));const cx=w/2,cy=h/2,dx=Math.min(w*.26,260),dy=Math.min(h*.3,150);
+  return {r,pos:{1:{x:cx-dx,y:cy-dy},2:{x:cx+dx,y:cy-dy},3:{x:cx+dx,y:cy+dy},4:{x:cx-dx,y:cy+dy}}};}
+let consLastLayout=null;
+function drawCons(){const cv=$("k-canvas");const {ctx,w,h}=fit(cv,.5,300,480);const L=consLayout(w,h);consLastLayout=L;ctx.clearRect(0,0,w,h);
+  // links
+  for(let a=1;a<=4;a++)for(let b=a+1;b<=4;b++){const A=L.pos[a],B=L.pos[b];const ok=reach(a,b)&&K.nodes[a-1].alive&&K.nodes[b-1].alive;
+    ctx.save();ctx.strokeStyle=ok?COL.line:COL.line;ctx.globalAlpha=ok?1:.45;ctx.lineWidth=2;if(!ok)ctx.setLineDash([4,6]);ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();ctx.restore();}
+  if(K.split){ctx.save();ctx.strokeStyle=COL.bad;ctx.lineWidth=3;ctx.beginPath();const x=w/2;let y=14;ctx.moveTo(x,y);let s=1;while(y<h-14){y+=14;ctx.lineTo(x+s*8,y);s=-s;}ctx.stroke();
+    ctx.fillStyle=COL.bad;ctx.font="600 12px Inter, sans-serif";ctx.textAlign="left";ctx.textBaseline="top";ctx.fillText("network split",x+14,12);ctx.restore();}
+  // packets
+  for(const p of K.pkts){const A=L.pos[p.a],B=L.pos[p.b];let prog=Math.min(1,(K.t-p.t0)/p.dur);const lim=p.blocked?.5:1;const q=ease(Math.min(prog,lim)/(p.blocked?1:1));
+    const pp=p.blocked?Math.min(prog,.5):prog;const e=ease(pp);let x=A.x+(B.x-A.x)*e,y=A.y+(B.y-A.y)*e;
+    const end=(p.blocked&&prog>=.5)||(p.toDead&&prog>=1);const after=K.t-p.t0-(p.blocked?p.dur*.5:p.dur);
+    if(prog>=1&&!p.blocked&&!p.toDead)continue;
+    const col=p.kind==="prop"?COL.accent:p.kind==="bad"?COL.bad:COL.ok;
+    ctx.save();if(end){ctx.globalAlpha=Math.max(0,1-after/400);ctx.strokeStyle=COL.bad;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x-5,y-5);ctx.lineTo(x+5,y+5);ctx.moveTo(x+5,y-5);ctx.lineTo(x-5,y+5);ctx.stroke();}
+    else{ctx.fillStyle=col;ctx.beginPath();if(p.kind==="prop"){rr(ctx,x-7,y-5,14,10,3);}else ctx.arc(x,y,5,0,Math.PI*2);ctx.fill();}
+    ctx.restore();}
+  // nodes
+  for(const n of K.nodes){const P=L.pos[n.id];const fl=Math.max(0,1-(K.t-n.flash)/700);
+    ctx.save();
+    if(fl>0&&n.flash){ctx.fillStyle=n.flashCol==="ok"?COL.ok:COL.warn;ctx.globalAlpha=fl*.35;ctx.beginPath();ctx.arc(P.x,P.y,L.r+10+(1-fl)*8,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}
+    ctx.fillStyle=!n.alive?COL["surface-2"]:n.byz?COL["bad-soft"]:COL.surface;ctx.beginPath();ctx.arc(P.x,P.y,L.r,0,Math.PI*2);ctx.fill();
+    ctx.lineWidth=n.id===K.leader&&n.alive?4:2;ctx.strokeStyle=!n.alive?COL.muted:n.byz?COL.bad:COL.accent;if(!n.alive)ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+    ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle=!n.alive?COL.muted:n.byz?COL.bad:COL.fg;ctx.font="600 15px Sora, Inter, sans-serif";ctx.fillText("Node "+n.id,P.x,P.y-5);
+    ctx.font="500 10px 'JetBrains Mono', monospace";ctx.fillStyle=!n.alive?COL.muted:n.byz?COL.bad:COL.muted;
+    ctx.fillText(!n.alive?"DOWN":n.byz?"MALICIOUS":"honest",P.x,P.y+12);
+    if(n.id===K.leader&&n.alive){const below=n.id>2;const ty=below?P.y+L.r+16:P.y-L.r-16;ctx.font="600 11px Inter, sans-serif";const tw=ctx.measureText("LEADER").width+16;
+      ctx.fillStyle=COL["accent-soft"];rr(ctx,P.x-tw/2,ty-10,tw,20,10);ctx.fill();ctx.fillStyle=COL.accent;ctx.fillText("LEADER",P.x,ty+1);}
+    ctx.restore();}
+  // centre caption
+  const R=K.round;ctx.save();ctx.textAlign="center";ctx.textBaseline="middle";ctx.font="500 13px Inter, sans-serif";
+  let cap="",ccol=COL.muted;
+  if(R){const el=K.t-R.t0;if(!R.leader){cap="No leader available";ccol=COL.bad;}else if(el<900)cap="1. Leader proposes block #"+(K.blocks+1);else if(el<1800)cap="2. Nodes vote";else if(el<2600){const ok=K.history[K.history.length-1]===1;cap=ok?"3. Quorum reached: block confirmed":"3. No quorum: block rejected";ccol=ok?COL.ok:COL.bad;}}
+  if(cap){if(!K.split){ctx.fillStyle=ccol;ctx.fillText(cap,w/2,h/2);}else{ctx.fillStyle=ccol;ctx.fillText(cap,w/2,h-16);}}
+  ctx.restore();}
+$("k-canvas").addEventListener("click",ev=>{if(!consLastLayout)return;const b=ev.currentTarget.getBoundingClientRect();const x=ev.clientX-b.left,y=ev.clientY-b.top;
+  for(const id in consLastLayout.pos){const P=consLastLayout.pos[id];if(Math.hypot(P.x-x,P.y-y)<=consLastLayout.r+6){toggleCrash(+id);break;}}});
+$("k-canvas").addEventListener("mousemove",ev=>{if(!consLastLayout)return;const b=ev.currentTarget.getBoundingClientRect();const x=ev.clientX-b.left,y=ev.clientY-b.top;
+  let hit=false;for(const id in consLastLayout.pos){const P=consLastLayout.pos[id];if(Math.hypot(P.x-x,P.y-y)<=consLastLayout.r+6)hit=true;}ev.currentTarget.style.cursor=hit?"pointer":"default";});
+
+/* ================= CHARTS ================= */
+function lineChart(id,vals,maxFloor,limit,unit,colFn){const cv=$(id);const {ctx,w,h}=fit(cv,.32,150,200);ctx.clearRect(0,0,w,h);
+  const padL=46,padR=10,padT=10,padB=22;const cw=w-padL-padR,chh=h-padT-padB;
+  let max=Math.max(maxFloor,...vals.map(v=>v*1.15));max=niceMax(max);
+  ctx.font="400 11px 'JetBrains Mono', monospace";ctx.fillStyle=COL.muted;ctx.textAlign="right";ctx.textBaseline="middle";
+  for(let i=0;i<=4;i++){const v=max*i/4,y=padT+chh-chh*i/4;ctx.strokeStyle=COL.line;ctx.globalAlpha=.6;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();ctx.globalAlpha=1;
+    ctx.fillText(Math.round(v).toLocaleString(),padL-6,y);}
+  ctx.textAlign="left";ctx.textBaseline="top";ctx.fillText("last 40 s",padL,h-16);ctx.textAlign="right";ctx.fillText("now",w-padR,h-16);
+  const yL=padT+chh-chh*limit/max;ctx.save();ctx.strokeStyle=COL.bad;ctx.setLineDash([5,4]);ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(padL,yL);ctx.lineTo(w-padR,yL);ctx.stroke();ctx.restore();
+  if(vals.length<2)return;const N=80;const x=i=>padL+cw*(i+(N-vals.length))/(N-1);const y=v=>padT+chh-chh*Math.min(v,max)/max;
+  ctx.save();ctx.beginPath();ctx.moveTo(x(0),padT+chh);vals.forEach((v,i)=>ctx.lineTo(x(i),y(v)));ctx.lineTo(x(vals.length-1),padT+chh);ctx.closePath();
+  ctx.fillStyle=COL.accent;ctx.globalAlpha=.12;ctx.fill();ctx.restore();
+  for(let i=1;i<vals.length;i++){ctx.strokeStyle=(vals[i]>limit||vals[i-1]>limit)?COL.bad:COL.accent;ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(x(i-1),y(vals[i-1]));ctx.lineTo(x(i),y(vals[i]));ctx.stroke();}
+  const lv=vals[vals.length-1];ctx.fillStyle=lv>limit?COL.bad:COL.accent;ctx.beginPath();ctx.arc(x(vals.length-1),y(lv),4,0,Math.PI*2);ctx.fill();}
+function niceMax(v){const p=Math.pow(10,Math.floor(Math.log10(v)));const m=v/p;return (m<=1?1:m<=2?2:m<=2.5?2.5:m<=5?5:10)*p;}
+function barChart(id,hist){const cv=$(id);const {ctx,w,h}=fit(cv,.32,150,200);ctx.clearRect(0,0,w,h);
+  const padL=46,padR=10,padT=10,padB=22,cw=w-padL-padR,chh=h-padT-padB,N=20;const bw=cw/N;
+  ctx.font="400 11px 'JetBrains Mono', monospace";ctx.fillStyle=COL.muted;ctx.textAlign="right";ctx.textBaseline="middle";
+  ctx.fillText("1",padL-6,padT);ctx.fillText("0",padL-6,padT+chh);
+  ctx.strokeStyle=COL.line;ctx.beginPath();ctx.moveTo(padL,padT+chh);ctx.lineTo(w-padR,padT+chh);ctx.stroke();
+  ctx.textAlign="left";ctx.textBaseline="top";ctx.fillText("last 20 rounds",padL,h-16);ctx.textAlign="right";ctx.fillText("now",w-padR,h-16);
+  const hs=hist.slice(-N);hs.forEach((v,i)=>{const x=padL+bw*(i+N-hs.length)+3;ctx.fillStyle=v?COL.ok:COL.bad;const bh=v?chh-4:10;rr(ctx,x,padT+chh-bh,bw-6,bh,3);ctx.fill();});}
+function stallChart(id){const cv=$(id);const {ctx,w,h}=fit(cv,.32,150,200);ctx.clearRect(0,0,w,h);
+  // quorum gauge: 4 slots, 3 needed
+  const hv=K.round&&K.round.leader?honestVotes(K.round.leader):0;
+  const slots=4,gap=12,sw=Math.min(90,(w-40-gap*3)/slots),sh=Math.min(90,h-70),x0=(w-(sw*slots+gap*3))/2,y0=16;
+  for(let i=0;i<slots;i++){const x=x0+i*(sw+gap);const filled=i<hv;ctx.fillStyle=filled?(hv>=3?COL["ok-soft"]:COL["warn-soft"]):COL["surface-2"];rr(ctx,x,y0,sw,sh,10);ctx.fill();
+    ctx.strokeStyle=filled?(hv>=3?COL.ok:COL.warn):COL.line;ctx.lineWidth=2;ctx.stroke();
+    if(i===2){ctx.save();ctx.strokeStyle=COL.fg;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(x+sw+gap/2,y0-6);ctx.lineTo(x+sw+gap/2,y0+sh+6);ctx.stroke();ctx.restore();}}
+  ctx.font="500 13px Inter, sans-serif";ctx.textAlign="center";ctx.textBaseline="top";ctx.fillStyle=hv>=3?COL.ok:COL.bad;
+  ctx.fillText(hv+" honest, reachable votes. Quorum line after 3.",w/2,y0+sh+12);}
+
+/* ================= VIEW + LOOP ================= */
+const VIEWS=["cache","consensus"];
+function setView(v){if(!VIEWS.includes(v))v="cache";G.view=v;
+  document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected",t.dataset.view===v));
+  $("view-cache").hidden=v!=="cache";$("view-consensus").hidden=v!=="consensus";
+  $("script-cache").hidden=v!=="cache";$("script-consensus").hidden=v!=="consensus";
+  if(v==="cache"){$("ch1-title").textContent="Response time (ms)";$("ch1-note").textContent="dashed line: 300 ms limit";$("ch2-title").textContent="Error rate (%)";$("ch2-note").textContent="dashed line: 1% limit";}
+  else{$("ch1-title").textContent="Blocks confirmed per round";$("ch1-note").textContent="green: confirmed, red: stalled";$("ch2-title").textContent="Quorum check";$("ch2-note").textContent="needs 3 of 4 honest votes";}
+  renderLog();if(v==="cache")updateCacheReadouts(false);else updateConsReadouts();
+  try{if(location.hash!=="#"+v)history.replaceState(null,"","#"+v);}catch(e){}}
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>setView(t.dataset.view));
+window.addEventListener("hashchange",()=>setView(location.hash.slice(1)));
+$("pause").onclick=()=>{G.paused=!G.paused;$("pause").textContent=G.paused?"Play":"Pause";$("pause").setAttribute("aria-label",G.paused?"Resume simulation":"Pause simulation");$("pause").className=G.paused?"btn-on":"";};
+$("speed").onchange=e=>G.speed=+e.target.value;
+
+cacheInit();consInit();setView(location.hash.slice(1)||"cache");
+let last=performance.now();
+function frame(now){let dt=Math.min(100,now-last);last=now;
+  if(!G.paused){const sdt=dt*G.speed;const steps=Math.ceil(sdt/20);for(let i=0;i<steps;i++){if(G.view==="cache")cacheStep(sdt/steps);else consStep(sdt/steps);}}
+  if(G.view==="cache"){drawCache();lineChart("ch1",C.samples.map(s=>s.lat),400,300,"ms");lineChart("ch2",C.samples.map(s=>s.err),5,1,"%");}
+  else{drawCons();barChart("ch1",K.history);stallChart("ch2");}
+  requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+})();
+</script>
+
+</body>
+</html>
